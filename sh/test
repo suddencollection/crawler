@@ -7,4 +7,4 @@ BUILD_DIR="build"
 [ -d "${BUILD_DIR}" ] || { echo "Error: Build directory ${BUILD_DIR} does not exist."; exit 1; }
 
 # Run the tests
-ctest --test-dir "${BUILD_DIR}" --output-on-failure -V -j4
+ctest --test-dir "$BUILD_DIR" -VV

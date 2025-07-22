@@ -1,14 +1,9 @@
-#include <curl/curl.h>
 #include <iostream>
 #include <limits>
 #include <program.hpp>
 #include <queue>
 //
-#include <lexbor/dom/interfaces/element.h>
-#include <lexbor/html/interface.h>
-#include <lexbor/html/parser.h>
 
-CURLM* multi_handle = nullptr;
 
 size_t Program::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -30,15 +25,18 @@ Program::~Program()
   curl_global_cleanup();
 }
 
-std::pair<std::string, std::string> Program::request_html(std::string const& url)
+Program::Response Program::request_html(std::string const& url)
 {
   CURL* easy = curl_easy_init();
-  if(easy == nullptr) {
-    throw std::runtime_error("Failed to request " + url);
+  if(!easy) {
+    throw std::runtime_error("Failed to init curl for " + url);
   }
-  std::string response{};
+
+  std::string response;
 
   curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);       // max 10 seconds per request
+  curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L); // max 5 seconds to connect
   curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, Program::write_callback);
   curl_easy_setopt(easy, CURLOPT_WRITEDATA, &response);
   curl_easy_setopt(easy, CURLOPT_FOLLOWLOCATION, 1L);
@@ -46,21 +44,36 @@ std::pair<std::string, std::string> Program::request_html(std::string const& url
 
   curl_multi_add_handle(multi_handle, easy);
 
-  int still_running = 0; // number of transfers still in progress
+  int still_running = 0;
   curl_multi_perform(multi_handle, &still_running);
 
   while(still_running) {
-    int numfds = {};
-    curl_multi_wait(multi_handle, NULL, 0, 1000, &numfds);
+    int numfds = 0;
+    CURLMcode mc = curl_multi_wait(multi_handle, nullptr, 0, 1000, &numfds);
+    if(mc != CURLM_OK) {
+      curl_multi_remove_handle(multi_handle, easy);
+      curl_easy_cleanup(easy);
+      throw std::runtime_error("curl_multi_wait error");
+    }
     curl_multi_perform(multi_handle, &still_running);
   }
 
-  char* eff_url = nullptr;
-  if(eff_url == nullptr) {
-    throw std::runtime_error("Failed to request " + url + ": invalid effective url.");
+  long response_code = 0;
+  curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &response_code);
+  if(response_code >= 400) {
+    curl_multi_remove_handle(multi_handle, easy);
+    curl_easy_cleanup(easy);
+    throw std::runtime_error("HTTP error " + std::to_string(response_code) + " for " + url);
   }
 
+  char* eff_url = nullptr;
   curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &eff_url);
+  if(!eff_url) {
+    curl_multi_remove_handle(multi_handle, easy);
+    curl_easy_cleanup(easy);
+    throw std::runtime_error("Invalid effective URL for " + url);
+  }
+
   curl_multi_remove_handle(multi_handle, easy);
   curl_easy_cleanup(easy);
 
@@ -183,6 +196,28 @@ void Program::extract_links_rec(lxb_dom_node_t* node,
     }
     extract_links_rec(child, out, base_url);
   }
+}
+
+bool Program::is_valid_url(std::string url)
+{
+  CURLU* h = curl_url();
+  if(!h) return false;
+
+  if(curl_url_set(h, CURLUPART_URL, url.c_str(), 0) != CURLUE_OK) {
+    curl_url_cleanup(h);
+    return false;
+  }
+
+  char* scheme = nullptr;
+  if(curl_url_get(h, CURLUPART_SCHEME, &scheme, 0) != CURLUE_OK) {
+    curl_url_cleanup(h);
+    return false;
+  }
+
+  bool is_http = strcmp(scheme, "http") == 0 || strcmp(scheme, "https") == 0;
+  curl_free(scheme);
+  curl_url_cleanup(h);
+  return is_http;
 }
 
 std::vector<PageNode> Program::parse_url(std::string url, std::string const& content)
