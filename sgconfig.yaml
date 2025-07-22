@@ -1,0 +1,9 @@
+language: cpp
+
+include:
+  - src/**/*.cpp
+  - inc/**/*.hpp
+
+exclude:
+  - build/**
+  - temp/**
