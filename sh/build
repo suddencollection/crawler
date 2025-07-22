@@ -1,4 +1,16 @@
 #!/usr/bin/env sh
 
-cmake -S . -B build
-cmake --build build
+# Exit immediately if a command fails
+set -e
+
+# Define the build directory name
+BUILD_DIR="build"
+
+# 1. Install Conan dependencies
+conan install . --output-folder=${BUILD_DIR} --build=missing
+
+# 2. Configure the project, adding the flag to generate compile commands
+cmake -S . -B ${BUILD_DIR} --preset conan-release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+# 3. Build the project
+cmake --build ${BUILD_DIR}
