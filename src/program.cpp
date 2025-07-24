@@ -1,9 +1,6 @@
 #include <iostream>
 #include <limits>
 #include <program.hpp>
-#include <queue>
-//
-
 
 size_t Program::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -35,6 +32,7 @@ Program::Response Program::request_html(std::string const& url)
   std::string response;
 
   curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(easy, CURLOPT_VERBOSE, 0L);
   curl_easy_setopt(easy, CURLOPT_TIMEOUT, 10L);       // max 10 seconds per request
   curl_easy_setopt(easy, CURLOPT_CONNECTTIMEOUT, 5L); // max 5 seconds to connect
   curl_easy_setopt(easy, CURLOPT_WRITEFUNCTION, Program::write_callback);
@@ -74,25 +72,48 @@ Program::Response Program::request_html(std::string const& url)
     throw std::runtime_error("Invalid effective URL for " + url);
   }
 
+  if(!is_valid_url(eff_url)) {
+    throw std::runtime_error("invalid final url for " + url + ": " + eff_url);
+  }
+
+  std::string final_url{eff_url}; // copy before it gets deleted
+
   curl_multi_remove_handle(multi_handle, easy);
   curl_easy_cleanup(easy);
 
-  return std::make_pair(std::string(eff_url), response);
+  return std::make_pair(final_url, response);
 }
 
-PageNode Program::crawl_page(std::string const& url, int max_depth)
+PageNode Program::crawl_page(std::string const& url, int depth)
 {
-  // auto node = PageNode{
-  //   .url = url,
-  //   .links = {},
-  // };
+  std::cout << "crawling page " << url << std::endl;
+  if(depth <= 0 || !is_valid_url(url)) {
+    return PageNode(url); // leaf node
+  }
 
-  std::queue<PageNode> to_visit;
-  // std::set<PageNode>
-  // auto [final_url, html] = request_html(url);
+  std::string final_url;
+  std::string content;
 
-  // return node;
-  return PageNode{""};
+  try {
+    std::tie(final_url, content) = request_html(url);
+  }
+  catch(const std::exception& e) {
+    std::cerr << "Error fetching " << url << ": " << e.what() << '\n';
+    return PageNode(url);
+  }
+
+  PageNode node(final_url);
+  std::vector<PageNode> children = parse_url(final_url, content);
+
+  node.reserve(children.size());
+
+  std::cout << "[Depth " << depth << "]" << std::endl;
+  for(const auto& child : children) {
+    PageNode sub = crawl_page(child.url(), depth - 1);
+    node.add(std::move(sub));
+  }
+
+  return node;
 }
 
 void Program::print_header()
@@ -142,7 +163,7 @@ int Program::request_depth()
   return depth;
 }
 
-static std::string resolve_url(const std::string& base_url,
+std::string Program::resolve_url(const std::string& base_url,
   const std::string& href)
 {
   std::string out;
@@ -223,19 +244,27 @@ bool Program::is_valid_url(std::string url)
 std::vector<PageNode> Program::parse_url(std::string url, std::string const& content)
 {
   std::vector<PageNode> pages;
+  std::string error_message = "Failed to parse " + url + ". ";
 
   auto* doc = lxb_html_document_create();
-  if(!doc) return pages;
-
-  if(lxb_html_document_parse(doc,
-       reinterpret_cast<const lxb_char_t*>(content.c_str()),
-       content.size()) != LXB_STATUS_OK) {
-    lxb_html_document_destroy(doc);
-    return pages;
+  if(!doc) {
+    throw std::runtime_error(error_message + "lxb_html_document_create() error.");
   }
 
-  if(auto* body = lxb_html_document_body_element(doc)) {
-    extract_links_rec(lxb_dom_interface_node(body), pages, url);
+  auto parse_result = lxb_html_document_parse(doc, reinterpret_cast<const lxb_char_t*>(content.c_str()), content.size());
+  if(parse_result != LXB_STATUS_OK) {
+    lxb_html_document_destroy(doc);
+    throw std::runtime_error(error_message + "lxb_html_document_parse() error.");
+  }
+
+  auto* body = lxb_html_document_body_element(doc);
+  if(body == nullptr) {
+    throw std::runtime_error(error_message + "lxb_html_document_parse() error.");
+  }
+
+  extract_links_rec(lxb_dom_interface_node(body), pages, url);
+  if(pages.empty()) {
+    throw std::runtime_error(error_message + "failed to extract links.");
   }
 
   lxb_html_document_destroy(doc);
@@ -244,9 +273,13 @@ std::vector<PageNode> Program::parse_url(std::string url, std::string const& con
 
 void Program::run()
 {
+
+
+  return;
   print_header(); // fancy header output
   std::string root_url = request_input();
   int depth = request_depth();
-  auto [effective_url, content] = request_html(root_url);
-  std::vector<PageNode> links = parse_url(effective_url, content);
+  std::cout << "Crawling pages from root " << root_url << std::endl;
+  PageNode node = crawl_page(root_url, depth);
+  std::cout << "Done!" << std::endl;
 }

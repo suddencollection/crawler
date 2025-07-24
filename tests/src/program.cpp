@@ -1,6 +1,7 @@
 #include "program.hpp" // The header you're testing
 
 #include <doctest/doctest.h>
+#include <iostream>
 
 std::vector<std::string> urls{
   "https://example.com/",
@@ -46,8 +47,15 @@ TEST_CASE("parse_url")
     CHECK(!content.empty());
 
     std::vector<PageNode> nodes = p.parse_url(final_url, content);
+    CHECK(!nodes.empty());
+    std::cout << "for page " << url << ", here are the " << nodes.size() << " extracted links:" << std::endl;
     for(auto& node : nodes) {
+      std::cout << node.url() << std::endl;
       CHECK_MESSAGE(Program::is_valid_url(node.url()), "Invalid URL extracted: " << node.url());
     }
   }
+}
+
+TEST_CASE("") {
+
 }
