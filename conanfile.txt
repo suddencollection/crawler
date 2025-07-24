@@ -2,6 +2,7 @@
 libcurl/8.5.0
 lexbor/2.4.0
 doctest/2.4.11
+ogdf/2023.09
 
 [generators]
 CMakeToolchain
