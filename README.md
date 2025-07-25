@@ -10,7 +10,7 @@ A simple **web crawler** written in modern C++, which extracts hyperlinks and bu
 # Building
 Before building the project, make sure the following dependencies are installed on your system:
 
-- [CMake](https://cmake.org/download/) ≥ 3.21
+- [CMake](https://cmake.org/download/) ≥ 3.23
 - [Conan](https://conan.io/), the C++ package manager
 - **C++20 compiler**
 
