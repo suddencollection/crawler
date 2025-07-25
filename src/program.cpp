@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <program.hpp>
@@ -8,8 +10,14 @@
 #include <ogdf/basic/GraphAttributes.h>
 #include <ogdf/fileformats/GraphIO.h>
 //
+// Include headers for all the layout engines we will use
+#include <ogdf/energybased/DavidsonHarelLayout.h>
 #include <ogdf/energybased/FMMMLayout.h>
+#include <ogdf/energybased/GEMLayout.h>
+#include <ogdf/energybased/NodeRespecterLayout.h>
 #include <ogdf/energybased/PivotMDS.h>
+#include <ogdf/energybased/SpringEmbedderKK.h>
+#include <ogdf/energybased/StressMinimization.h>
 
 size_t Program::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -358,25 +366,61 @@ auto Program::add_node(std::string const& url, int depth) -> PageNode::Index
   return it->second;
 }
 
-void Program::graph()
+ogdf::Color getHeatMapColor(float value)
 {
-  // create graph
-  ogdf::Graph G; // creates the empty graph
+  // Clamp value to the [0, 1] range to prevent errors
+  value = std::max(0.0f, std::min(1.0f, value));
 
-  // create nodes
-  std::vector<ogdf::node> nodes;
-  nodes.reserve(m_nodes.size());
-  for(int i = 0; i < m_nodes.size(); ++i) {
-    nodes.push_back(G.newNode()); // Adds 50 nodes to G
+  // Define the key colors for the gradient
+  const int numColors = 4;
+  ogdf::Color colors[numColors] = {
+    ogdf::Color("#4488FF"), // 1. Blue for low values
+    ogdf::Color("#00FF00"), // 2. Green
+    ogdf::Color("#FFFF00"), // 3. Yellow
+    ogdf::Color("#FF0000")  // 4. Red for high values
+  };
+
+  // If the value is at the maximum, return the last color directly
+  if(value >= 1.0f) {
+    return colors[numColors - 1];
   }
 
-  // create edges
+  // Determine which two colors to interpolate between
+  float scaledValue = value * (numColors - 1);
+  int idx1 = static_cast<int>(scaledValue);
+  int idx2 = idx1 + 1;
+  float fraction = scaledValue - idx1;
+
+  // Linearly interpolate the RGB components
+  unsigned char r = static_cast<unsigned char>(colors[idx1].red() * (1 - fraction) + colors[idx2].red() * fraction);
+  unsigned char g = static_cast<unsigned char>(colors[idx1].green() * (1 - fraction) + colors[idx2].green() * fraction);
+  unsigned char b = static_cast<unsigned char>(colors[idx1].blue() * (1 - fraction) + colors[idx2].blue() * fraction);
+
+  return ogdf::Color(r, g, b);
+}
+
+
+/**
+ * @brief Generates and styles a graph based on web crawler data.
+ *
+ * This function creates a graph visualization from crawled web pages, styling nodes
+ * and edges based on their connectivity. Nodes with more links are larger and colored
+ * more intensely on a heatmap. Edges are styled to match.
+ */
+void Program::graph()
+{
+  // 1. Graph Construction
+  // ---------------------
+  ogdf::Graph G;
+
+  std::vector<ogdf::node> nodes;
+  nodes.reserve(m_nodes.size());
+  for(size_t i = 0; i < m_nodes.size(); ++i) {
+    nodes.push_back(G.newNode());
+  }
+
   for(std::size_t i = 0; i < m_nodes.size(); ++i) {
     PageNode const& node = m_nodes[i];
-    if(node.children().empty() ) {
-      std::cout << "empty node children " << node.index() << std::endl;
-    }
-
     for(int child_index : node.children()) {
       if(child_index >= 0 && child_index < static_cast<int>(nodes.size())) {
         G.newEdge(nodes[i], nodes[child_index]);
@@ -387,31 +431,116 @@ void Program::graph()
   std::cout << "[graph] Nodes: " << G.numberOfNodes()
             << ", Edges: " << G.numberOfEdges() << "\n";
 
-  // 2) Set up attributes & initial positions
-  ogdf::GraphAttributes GA(G, ogdf::GraphAttributes::nodeGraphics |
-                                ogdf::GraphAttributes::edgeGraphics |
-                                ogdf::GraphAttributes::nodeStyle |
-                                ogdf::GraphAttributes::edgeStyle);
-
-  std::mt19937 gen{std::random_device{}()};
-  std::uniform_real_distribution<> coord(-200.0, 200.0);
-  for(auto v : G.nodes) {
-    GA.x(v) = coord(gen);
-    GA.y(v) = coord(gen);
-    GA.width(v) = 3.0;
-    GA.height(v) = 3.0;
-    GA.shape(v) = ogdf::Shape::Ellipse;
+  if(G.numberOfNodes() == 0) {
+    std::cout << "Graph is empty, skipping layout." << std::endl;
+    return;
   }
 
-  // 3) Run the one layout engine you included
-  // ──────────────────────────────────────────
-  ogdf::FMMMLayout layout; // <— swap this line + include above as needed
-  layout.call(GA);
-  ogdf::GraphIO::write(GA,
-    "graph-FMMMLayout.svg",
-    ogdf::GraphIO::drawSVG);
+  // 2. Style Calculation
+  // --------------------
+  int maxDegree = 0;
+  for(ogdf::node v : G.nodes) {
+    if(v->degree() > maxDegree) {
+      maxDegree = v->degree();
+    }
+  }
+  if(maxDegree == 0) maxDegree = 1;
 
-  std::cout << "Wrote graph-FMMMLayout.svg\n";
+  // 3. Attribute Assignment
+  // -----------------------
+  ogdf::GraphAttributes GA(G, ogdf::GraphAttributes::all);
+
+  // --- NEW: Pre-computation step to find parents efficiently ---
+  // Since we can't ask a node for its parent directly, we build a map.
+  // The key is the child node, and the value is its parent node.
+  std::unordered_map<ogdf::node, ogdf::node> childToParentMap;
+  for(ogdf::edge e : G.edges) {
+    // The target of a directed edge is the child.
+    childToParentMap[e->target()] = e->source();
+  }
+
+  // --- MODIFIED: Style nodes based on their PARENT's degree ---
+  const double minNodeSize = 0.75;
+  const double maxNodeSize = 2.50;
+  for(ogdf::node v : G.nodes) {
+    double size = maxNodeSize; // Default to max size (for root nodes)
+
+    // Find the parent in our pre-computed map
+    auto it = childToParentMap.find(v);
+    if(it != childToParentMap.end()) {
+      // If a parent is found...
+      ogdf::node parent = it->second;
+
+      // Normalize the parent's degree
+      double normalizedParentDegree = static_cast<double>(parent->degree()) / maxDegree;
+
+      // Calculate size to be INVERSELY proportional to the parent's degree
+      size = minNodeSize + (maxNodeSize - minNodeSize) * (1.0 - normalizedParentDegree);
+    }
+
+    GA.width(v) = size;
+    GA.height(v) = size;
+    GA.shape(v) = ogdf::Shape::Ellipse;
+
+    // Color is still based on the node's OWN degree
+    double normalizedDegree = static_cast<double>(v->degree()) / maxDegree;
+    GA.fillColor(v) = getHeatMapColor(normalizedDegree);
+    GA.strokeColor(v) = ogdf::Color("#000000");
+    GA.strokeWidth(v) = 0.05;
+  }
+
+
+  // Style edges (unchanged)
+  for(ogdf::edge e : G.edges) {
+    int max_end_degree = std::max(e->source()->degree(), e->target()->degree());
+    double norm_val = static_cast<double>(max_end_degree) / maxDegree;
+
+    ogdf::Color tempColor = getHeatMapColor(norm_val);
+    ogdf::Color edgeColor(tempColor.red(), tempColor.green(), tempColor.blue(), uint8_t{120});
+    GA.strokeColor(e) = edgeColor;
+
+    // double width = 0.2 + 2.0 * std::pow(norm_val, 2.0);
+    // GA.strokeWidth(e) = width;
+    GA.strokeWidth(e) = 0.05;
+
+    GA.arrowType(e) = ogdf::EdgeArrow::None;
+  }
+
+  // 4. Layout and Export
+  // --------------------
+  // ogdf::FMMMLayout lay;
+  // ogdf::SpringEmbedderKK lay;
+  // ogdf::GEMLayout lay;
+  // ogdf::DavidsonHarelLayout lay;
+  // ogdf::PivotMDS lay;
+  // ogdf::StressMinimization lay;
+  // ogdf::NodeRespecterLayout lay;
+
+  auto runLayout = [&](ogdf::LayoutModule& layout, const std::string& name) {
+    std::cout << "Running " << name << " layout..." << std::endl;
+    // We make a copy of the attributes to ensure each layout starts fresh
+    ogdf::GraphAttributes GAcopy = GA;
+    layout.call(GAcopy);
+    std::string filename = "graph-" + name + ".svg";
+    ogdf::GraphIO::write(GAcopy, filename, ogdf::GraphIO::drawSVG);
+    std::cout << "Wrote " << filename << std::endl;
+  };
+
+  // Engine 1: FMMMLayout (Fast Multipole Multilevel Method)
+  ogdf::FMMMLayout fmmmLayout;
+  fmmmLayout.useHighLevelOptions(true);
+  fmmmLayout.unitEdgeLength(15.0);
+  fmmmLayout.newInitialPlacement(true);
+  fmmmLayout.qualityVersusSpeed(ogdf::FMMMOptions::QualityVsSpeed::GorgeousAndEfficient);
+  runLayout(fmmmLayout, "FMMMLayout");
+
+  // Engine 2: StressMinimization
+  ogdf::StressMinimization stressMinimization;
+  runLayout(stressMinimization, "StressMinimization");
+
+  // Engine 3: NodeRespecterLayout
+  ogdf::NodeRespecterLayout nodeRespecterLayout;
+  runLayout(nodeRespecterLayout, "NodeRespecterLayout");
 }
 
 void Program::run()
@@ -420,8 +549,8 @@ void Program::run()
   // std::string root_url = request_input();
   // int depth = request_depth();
 
-  std::string root_url = "https://www.iana.org/help/example-domains";
-  int depth = 1;
+  std::string root_url = "https://en.cppreference.com/w/";
+  int depth = 3;
 
   std::cout << "Crawling pages from root " << root_url << std::endl;
 
