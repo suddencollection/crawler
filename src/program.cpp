@@ -1,23 +1,22 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <program.hpp>
+#include <thread>
 #include <unordered_set>
-
 //
 #include <ogdf/basic/Graph.h>
 #include <ogdf/basic/GraphAttributes.h>
 #include <ogdf/fileformats/GraphIO.h>
-//
 // Include headers for all the layout engines we will use
-#include <ogdf/energybased/DavidsonHarelLayout.h>
 #include <ogdf/energybased/FMMMLayout.h>
-#include <ogdf/energybased/GEMLayout.h>
 #include <ogdf/energybased/NodeRespecterLayout.h>
-#include <ogdf/energybased/PivotMDS.h>
-#include <ogdf/energybased/SpringEmbedderKK.h>
 #include <ogdf/energybased/StressMinimization.h>
+//
+#include <fmt/color.h>
+#include <fmt/core.h>
 
 size_t Program::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -46,6 +45,11 @@ Program::Response Program::request_html(std::string const& url)
     throw std::runtime_error("Failed to init curl for " + url);
   }
 
+  auto clean = [&]() {
+    curl_multi_remove_handle(m_multi_handle, easy);
+    curl_easy_cleanup(easy);
+  };
+
   std::string response;
 
   curl_easy_setopt(easy, CURLOPT_URL, url.c_str());
@@ -66,8 +70,7 @@ Program::Response Program::request_html(std::string const& url)
     int numfds = 0;
     CURLMcode mc = curl_multi_wait(m_multi_handle, nullptr, 0, 1000, &numfds);
     if(mc != CURLM_OK) {
-      curl_multi_remove_handle(m_multi_handle, easy);
-      curl_easy_cleanup(easy);
+      clean();
       throw std::runtime_error("curl_multi_wait error");
     }
     curl_multi_perform(m_multi_handle, &still_running);
@@ -76,28 +79,32 @@ Program::Response Program::request_html(std::string const& url)
   long response_code = 0;
   curl_easy_getinfo(easy, CURLINFO_RESPONSE_CODE, &response_code);
   if(response_code >= 400) {
-    curl_multi_remove_handle(m_multi_handle, easy);
-    curl_easy_cleanup(easy);
+    clean();
     throw std::runtime_error("HTTP error " + std::to_string(response_code) + " for " + url);
   }
 
-  std::optional<std::string> final_url = get_effective_url(url);
-  if(!final_url) {
-    throw std::runtime_error("Failed to get effective_url.");
+  std::string final_url;
+  char* eff_url_char;
+  curl_easy_getinfo(easy, CURLINFO_EFFECTIVE_URL, &eff_url_char);
+
+  if(!eff_url_char) {
+    clean();
+    throw std::runtime_error("Failed to get effective_url requesting html.");
   }
 
-  curl_multi_remove_handle(m_multi_handle, easy);
-  curl_easy_cleanup(easy);
-  return std::make_pair(final_url.value(), response);
+  final_url = normalize_url(std::string(eff_url_char));
+  clean();
+  return std::make_pair(final_url, response);
 }
 
 void Program::crawl_page(std::string const& url, int depth)
 {
   std::optional<std::string> effective_url = get_effective_url(url);
   if(!effective_url) {
-    throw std::runtime_error("Faield to get effective url in crawl_page.");
+    throw std::runtime_error("Failed to get effective url in crawl_page.");
   }
 
+  // builds root node and crawls {depth} times
   int index = add_node(effective_url.value(), depth);
   crawl_page_rec(get_node(index), depth);
 }
@@ -119,7 +126,8 @@ std::optional<std::string> Program::get_effective_url(std::string const& url)
   CURLcode res = curl_easy_perform(curl);
   char* effective_url = nullptr;
   if(res != CURLE_OK) {
-    std::cerr << "CURL failed: " << curl_easy_strerror(res) << std::endl;
+    fmt::print(stderr, fg(fmt::color::red), "❌ curl failed: {}\n", curl_easy_strerror(res));
+    curl_easy_cleanup(curl);
     return std::nullopt;
   }
   curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &effective_url);
@@ -144,15 +152,18 @@ std::optional<PageNode::Index> Program::crawl_page_rec(PageNode& page, int depth
     return std::nullopt;
   }
 
-  std::cout << "crawling page " << url << std::endl;
-  std::string final_url{};
-  std::string content{};
+  fmt::print(fg(fmt::color::cyan) | fmt::emphasis::bold,
+    "\n🔍 Crawling (depth {}) → {}\n", depth, url);
+
+  std::string final_url{}, content{};
 
   try {
+    // politely wait
+    std::this_thread::sleep_for(std::chrono::milliseconds(300)); // ~3 requests per second
     std::tie(final_url, content) = request_html(url);
   }
   catch(const std::exception& e) {
-    std::cerr << "Error fetching " << url << ": " << e.what() << '\n';
+    fmt::print(fg(fmt::color::red), "❌ Error fetching {}: {}\n", url, e.what());
     return std::nullopt;
   }
 
@@ -160,25 +171,50 @@ std::optional<PageNode::Index> Program::crawl_page_rec(PageNode& page, int depth
   std::unordered_set<URL> children = parse_url(final_url, content);
   get_node(page.index()).reserve(children.size());
 
+  fmt::print(fg(fmt::color::green), "   ↳ Found {} links\n", children.size());
+
   // children
   int ended = 0;
+  int added = 0;
+  int duplicates = 0;
+  int linked = 0;
+
   for(URL const& child_url : children) {
     // avoids crawling the same page twice
     if(exists(child_url)) {
-      std::cout << "duplicate " << child_url << std::endl;
-      return std::nullopt;
+      page.add_link(get_index(child_url));
+      ++linked;
+      ++duplicates;
+      continue;
     }
 
     int child_index = add_node(child_url, depth);
     page.add_link(child_index);
+    ++added;
+    ++linked;
+
     auto maybe_index = crawl_page_rec(get_node(child_index), depth - 1);
-    if(!maybe_index && depth == 0) {
+    if(!maybe_index) {
       ++ended;
     }
   }
 
-  if(ended != 0) {
-    std::cout << ended << " have reached end for " << final_url << std::endl;
+  fmt::print(fg(fmt::color::medium_sea_green), "   🕷️ Crawled → {}\n", url);
+
+  if(added > 0) {
+    fmt::print(fg(fmt::color::blue), "      ➕ Added {} new nodes\n", added);
+  }
+
+  if(ended > 0) {
+    fmt::print(fg(fmt::color::light_gray), "      ⏹️  {} branches ended at this depth\n", ended);
+  }
+
+  if(duplicates > 0) {
+    fmt::print(fg(fmt::color::light_gray), "      ♻️  {} duplicates skipped\n", duplicates);
+  }
+
+  if(linked > 0) {
+    fmt::print(fg(fmt::color::light_gray), "      🔗  {} nodes linked\n", linked);
   }
 
   return page.index();
@@ -186,43 +222,49 @@ std::optional<PageNode::Index> Program::crawl_page_rec(PageNode& page, int depth
 
 void Program::print_header()
 {
-  std::cout << "web crawler" << std::endl;
+  fmt::print(fmt::emphasis::bold | fg(fmt::color::cyan),
+    "\n╔════════════════════════════════════╗\n"
+    "║        🌐 Web Crawler Grapher      ║\n"
+    "╚════════════════════════════════════╝\n\n");
 }
 
 std::string Program::request_input()
 {
   CURLU* parser = curl_url(); // url parser
+  if(!parser) {
+    throw std::runtime_error("Failed to create CURLU parser.");
+  }
 
-  std::string output = "type your root url: ";
   std::string url;
+
   while(true) {
-    std::cout << output;
+    fmt::print(fmt::fg(fmt::color::cyan), "🌐 Enter root URL: ");
     std::cin >> url;
 
     CURLUcode code = curl_url_set(parser, CURLUPART_URL, url.c_str(), 0);
     if(code == CURLUE_OK) {
       break;
     } else {
-      output = "invalid url, try again: ";
+      fmt::print(fmt::fg(fmt::color::red), "❌ Invalid URL, try again.\n");
     }
   }
+
   curl_url_cleanup(parser);
   return url;
 }
 
 int Program::request_depth()
 {
-  int depth = {};
-  std::string message = "depth: ";
+  int depth = -1;
 
   while(true) {
-    std::cout << message;
+    fmt::print(fmt::fg(fmt::color::cyan), "🔢 Enter max crawl depth: ");
     std::cin >> depth;
 
     if(std::cin.fail() || depth < 0) {
       std::cin.clear();
       std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-      message = "invalid depth, should be a positive integer: ";
+      fmt::print(fmt::fg(fmt::color::red), "❌ Invalid input. Must be a non-negative integer.\n");
     } else {
       break;
     }
@@ -279,7 +321,7 @@ void Program::extract_links_rec(lxb_dom_node_t* node,
             std::string raw((const char*)href);
             std::optional<Program::URL> url = resolve_url(base_url, raw);
             if(url) {
-              out.insert(url.value());
+              out.insert(normalize_url(url.value()));
             }
           }
         }
@@ -311,6 +353,27 @@ bool Program::is_valid_url(std::string url)
   return is_http;
 }
 
+std::string Program::normalize_url(std::string_view url)
+{
+  std::string result(url);
+
+  // Remove fragment
+  auto hash_pos = result.find('#');
+  if(hash_pos != std::string::npos)
+    result.erase(hash_pos);
+
+  // Remove query
+  auto query_pos = result.find('?');
+  if(query_pos != std::string::npos)
+    result.erase(query_pos);
+
+  // Optional: remove trailing slash (careful!)
+  if(result.size() > 1 && result.back() == '/')
+    result.pop_back();
+
+  return result;
+}
+
 std::unordered_set<Program::URL> Program::parse_url(std::string url, std::string const& content)
 {
   std::unordered_set<URL> pages;
@@ -334,7 +397,7 @@ std::unordered_set<Program::URL> Program::parse_url(std::string url, std::string
 
   extract_links_rec(lxb_dom_interface_node(body), pages, url);
   if(pages.empty()) {
-    std::cerr << error_message << "failed to extract links." << std::endl;
+    fmt::print(stderr, fg(fmt::color::red), "📉 Failed to extract links from: {}\n", url);
   }
 
   lxb_html_document_destroy(doc);
@@ -399,15 +462,7 @@ ogdf::Color getHeatMapColor(float value)
   return ogdf::Color(r, g, b);
 }
 
-
-/**
- * @brief Generates and styles a graph based on web crawler data.
- *
- * This function creates a graph visualization from crawled web pages, styling nodes
- * and edges based on their connectivity. Nodes with more links are larger and colored
- * more intensely on a heatmap. Edges are styled to match.
- */
-void Program::graph()
+int Program::graph()
 {
   // 1. Graph Construction
   // ---------------------
@@ -428,12 +483,11 @@ void Program::graph()
     }
   }
 
-  std::cout << "[graph] Nodes: " << G.numberOfNodes()
-            << ", Edges: " << G.numberOfEdges() << "\n";
+  fmt::print(fg(fmt::color::magenta), "[Graph] 🧩 Nodes: {} | 🔗 Edges: {}\n", G.numberOfNodes(), G.numberOfEdges());
 
   if(G.numberOfNodes() == 0) {
-    std::cout << "Graph is empty, skipping layout." << std::endl;
-    return;
+    fmt::print(fg(fmt::color::red), "⚠️  Graph is empty, skipping layout.\n");
+    return 0;
   }
 
   // 2. Style Calculation
@@ -459,21 +513,17 @@ void Program::graph()
     childToParentMap[e->target()] = e->source();
   }
 
-  // --- MODIFIED: Style nodes based on their PARENT's degree ---
   const double minNodeSize = 0.75;
   const double maxNodeSize = 2.50;
   for(ogdf::node v : G.nodes) {
     double size = maxNodeSize; // Default to max size (for root nodes)
-
     // Find the parent in our pre-computed map
     auto it = childToParentMap.find(v);
     if(it != childToParentMap.end()) {
       // If a parent is found...
       ogdf::node parent = it->second;
-
       // Normalize the parent's degree
       double normalizedParentDegree = static_cast<double>(parent->degree()) / maxDegree;
-
       // Calculate size to be INVERSELY proportional to the parent's degree
       size = minNodeSize + (maxNodeSize - minNodeSize) * (1.0 - normalizedParentDegree);
     }
@@ -499,9 +549,8 @@ void Program::graph()
     ogdf::Color edgeColor(tempColor.red(), tempColor.green(), tempColor.blue(), uint8_t{120});
     GA.strokeColor(e) = edgeColor;
 
-    // double width = 0.2 + 2.0 * std::pow(norm_val, 2.0);
-    // GA.strokeWidth(e) = width;
-    GA.strokeWidth(e) = 0.05;
+    double width = 0.085 * std::pow(norm_val, 1.0);
+    GA.strokeWidth(e) = width;
 
     GA.arrowType(e) = ogdf::EdgeArrow::None;
   }
@@ -516,20 +565,46 @@ void Program::graph()
   // ogdf::StressMinimization lay;
   // ogdf::NodeRespecterLayout lay;
 
+  int graph_count = 0;
   auto runLayout = [&](ogdf::LayoutModule& layout, const std::string& name) {
-    std::cout << "Running " << name << " layout..." << std::endl;
+    fmt::print("[Layout] 🧠 {} ... ", name);
+
     // We make a copy of the attributes to ensure each layout starts fresh
     ogdf::GraphAttributes GAcopy = GA;
     layout.call(GAcopy);
     std::string filename = "graph-" + name + ".svg";
     ogdf::GraphIO::write(GAcopy, filename, ogdf::GraphIO::drawSVG);
-    std::cout << "Wrote " << filename << std::endl;
+
+    fmt::print(fg(fmt::color::green), "ok");
+    fmt::print(" ({} nodes, {} edges) 📄 Saved to {}\n", G.numberOfNodes(), G.numberOfEdges(), filename);
+
+    ++graph_count;
   };
+
+  auto runLayoutAndRespect = [&](ogdf::LayoutModule& baseLayout, const std::string& name) {
+    fmt::print("[Layout] 🧠 {} ... ", name);
+
+    ogdf::GraphAttributes GAcopy = GA;
+    baseLayout.call(GAcopy); // Run the main layout first
+
+    // Now run NodeRespecter to clean it up
+    ogdf::NodeRespecterLayout nodeRespecter;
+    // Suppose these setters exist in your OGDF version:
+    nodeRespecter.setNumberOfIterations(500); // default might be only 100
+    // nodeRespecter.setMinimalNodeGap(0.1);         // gap in graph‐coordinate units
+    nodeRespecter.setBendNormalizationAngle(0.5); // [0..1], how strongly edges avoid nodes
+    nodeRespecter.call(GAcopy);
+
+    std::string filename = "graph-" + name + "-respected.svg";
+    ogdf::GraphIO::write(GAcopy, filename, ogdf::GraphIO::drawSVG);
+    fmt::print(fg(fmt::color::green), "ok\n");
+    ++graph_count;
+  };
+
 
   // Engine 1: FMMMLayout (Fast Multipole Multilevel Method)
   ogdf::FMMMLayout fmmmLayout;
   fmmmLayout.useHighLevelOptions(true);
-  fmmmLayout.unitEdgeLength(15.0);
   fmmmLayout.newInitialPlacement(true);
   fmmmLayout.qualityVersusSpeed(ogdf::FMMMOptions::QualityVsSpeed::GorgeousAndEfficient);
   runLayout(fmmmLayout, "FMMMLayout");
@@ -540,26 +615,33 @@ void Program::graph()
 
   // Engine 3: NodeRespecterLayout
   ogdf::NodeRespecterLayout nodeRespecterLayout;
-  runLayout(nodeRespecterLayout, "NodeRespecterLayout");
+  runLayoutAndRespect(fmmmLayout, "FMMM-NodeRespecterLayout");
+
+  return graph_count;
 }
 
 void Program::run()
 {
   print_header(); // fancy header output
-  // std::string root_url = request_input();
-  // int depth = request_depth();
+  std::string root_url = request_input();
+  int depth = request_depth();
 
-  std::string root_url = "https://en.cppreference.com/w/";
-  int depth = 3;
+  // std::string root_url = "https://en.wikipedia.org/wiki/Web_crawler";
+  // int depth = 3;
 
-  std::cout << "Crawling pages from root " << root_url << std::endl;
+  fmt::print(fg(fmt::color::yellow), "🚀 Starting crawl from {}\n", root_url);
 
+  auto start = std::chrono::steady_clock::now();
   crawl_page(root_url, depth);
+  int graph_count = graph();
+  auto end = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(end - start).count();
 
-  std::cout << "Done! node_count: " << m_nodes.size() << std::endl;
-  std::cout << "index_to_url " << m_index_to_url.size() << std::endl;
-  std::cout << "url_to_index " << m_url_to_index.size() << std::endl;
-  std::cout << "m_nodes      " << m_nodes.size() << std::endl;
-
-  graph();
+  fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  fmt::print("📊 {}!\n", "Crawl Complete");
+  fmt::print("⏱️ {:<18} {}s\n", "Elapsed Time:", elapsed);
+  fmt::print("🌐 {:<18} {}\n", "Total Pages:", m_nodes.size());
+  fmt::print("📁 {:<18} {}\n", "Output SVGs:", graph_count);
+  fmt::print("⛏️ {:<18} {}\n", "Depth:", depth);
+  fmt::print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }
