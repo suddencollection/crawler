@@ -18,4 +18,9 @@ target_include_directories(tests PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/inc # test-specific headers
 )
 
-add_test(NAME all_tests COMMAND tests --reporters=console)
+add_test(NAME all_tests 
+  COMMAND tests 
+    --reporters=console
+    --rerun-failed
+    --output-on-failure
+)
