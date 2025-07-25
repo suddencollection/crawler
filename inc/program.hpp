@@ -66,14 +66,16 @@ public:
   auto crawl_page_rec(PageNode&, int depth)-> std::optional<PageNode::Index>;
   bool static is_valid_url(std::string url);
   auto static resolve_url(const std::string& base_url, const std::string& href) -> std::optional<std::string>;
-  void graph();
+  auto graph() -> int;
 
   auto get_node(PageNode::Index) -> PageNode&;
   auto add_node(std::string const&, int depth) -> PageNode::Index;
   auto node_count() -> int { return m_nodes.size(); };
   auto exists(std::string const& url) -> bool;
   auto get_url(PageNode::Index index) -> URL { return m_index_to_url.at(index); }
+  auto get_index(std::string const& url) -> PageNode::Index { return m_url_to_index.at(url); }
   auto get_effective_url(std::string const&) -> std::optional<std::string>;
+  auto static normalize_url(std::string_view url) -> std::string;
 
 private:
   CURLM* m_multi_handle = nullptr;

@@ -19,12 +19,14 @@ list(APPEND CMAKE_PREFIX_PATH "${CMAKE_BINARY_DIR}")
 find_package(CURL REQUIRED CONFIG)
 find_package(Lexbor REQUIRED)
 find_package(OGDF REQUIRED)
+find_package(fmt REQUIRED)
 
 target_link_libraries(crawler_lib
   PUBLIC
     CURL::libcurl
     lexbor::lexbor_static
     ogdf::ogdf
+    fmt::fmt
 )
 
 # executable
