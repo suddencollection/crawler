@@ -1,0 +1,16 @@
+🌐 Enter root URL: https://en.wikipedia.org/wiki/Force-directed_graph_drawing
+🔢 Enter max crawl depth: 2
+🚀 Starting crawl from https://en.wikipedia.org/wiki/Force-directed_graph_drawing
+.
+.
+.
+[Graph] 🧩 Nodes: 4155 | 🔗 Edges: 4977
+[Layout] 🧠 FMMMLayout ... ok (4155 nodes, 4977 edges) 📄 Saved to graph-FMMMLayout.svg
+[Layout] 🧠 StressMinimization ... ok (4155 nodes, 4977 edges) 📄 Saved to graph-StressMinimization.svg
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Crawl Complete!
+⏱️ Elapsed Time:      230s
+🌐 Total Pages:       4155
+📁 Output SVGs:       2
+⛏️ Depth:             2
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
