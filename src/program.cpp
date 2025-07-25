@@ -305,15 +305,12 @@ std::optional<std::string> Program::resolve_url(const std::string& base_url,
   return out;
 }
 
-// forward‑declare a small recursive helper
 void Program::extract_links_rec(lxb_dom_node_t* node,
   std::unordered_set<URL>& out, std::string const& base_url)
 {
   for(lxb_dom_node_t* child = node->first_child; child; child = child->next) {
     if(child->type == LXB_DOM_NODE_TYPE_ELEMENT) {
       auto* el = lxb_dom_interface_element(child);
-
-      // get the tag name as a C‑string
       const lxb_char_t* tag = lxb_dom_element_qualified_name(el, nullptr);
       if(tag && strcmp((const char*)tag, "a") == 0) {
         if(auto* attr = lxb_dom_element_attr_by_name(
@@ -465,10 +462,7 @@ ogdf::Color getHeatMapColor(float value)
 
 int Program::graph()
 {
-  // 1. Graph Construction
-  // ---------------------
   ogdf::Graph G;
-
   std::vector<ogdf::node> nodes;
   nodes.reserve(m_nodes.size());
   for(size_t i = 0; i < m_nodes.size(); ++i) {
@@ -487,11 +481,11 @@ int Program::graph()
   fmt::print(fg(fmt::color::magenta), "[Graph] 🧩 Nodes: {} | 🔗 Edges: {}\n", G.numberOfNodes(), G.numberOfEdges());
 
   if(G.numberOfNodes() == 0) {
-    fmt::print(fg(fmt::color::red), "⚠️  Graph is empty, skipping layout.\n");
+    fmt::print(fg(fmt::color::red), "⚠️  Graph is empty, skipping rendering.\n");
     return 0;
   }
 
-  // 2. Style Calculation
+  // Style Calculation
   // --------------------
   int maxDegree = 0;
   for(ogdf::node v : G.nodes) {
@@ -501,11 +495,11 @@ int Program::graph()
   }
   if(maxDegree == 0) maxDegree = 1;
 
-  // 3. Attribute Assignment
+  // Attribute Assignment
   // -----------------------
   ogdf::GraphAttributes GA(G, ogdf::GraphAttributes::all);
 
-  // --- NEW: Pre-computation step to find parents efficiently ---
+  // --- Pre-computation step to find parents efficiently ---
   // Since we can't ask a node for its parent directly, we build a map.
   // The key is the child node, and the value is its parent node.
   std::unordered_map<ogdf::node, ogdf::node> childToParentMap;
@@ -540,8 +534,7 @@ int Program::graph()
     GA.strokeWidth(v) = 0.15;
   }
 
-
-  // Style edges (unchanged)
+  // Style edges
   for(ogdf::edge e : G.edges) {
     int max_end_degree = std::max(e->source()->degree(), e->target()->degree());
     double norm_val = static_cast<double>(max_end_degree) / maxDegree;
@@ -558,14 +551,6 @@ int Program::graph()
 
   // 4. Layout and Export
   // --------------------
-  // ogdf::FMMMLayout lay;
-  // ogdf::SpringEmbedderKK lay;
-  // ogdf::GEMLayout lay;
-  // ogdf::DavidsonHarelLayout lay;
-  // ogdf::PivotMDS lay;
-  // ogdf::StressMinimization lay;
-  // ogdf::NodeRespecterLayout lay;
-
   int graph_count = 0;
   auto runLayout = [&](ogdf::LayoutModule& layout, const std::string& name) {
     fmt::print("[Layout] 🧠 {} ... ", name);
