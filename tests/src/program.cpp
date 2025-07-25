@@ -41,19 +41,22 @@ TEST_CASE("parse_url")
 {
   Program p{};
 
+  int index = 0;
   for(auto& url : urls) {
     auto [final_url, content] = p.request_html(url);
 
     CHECK(!content.empty());
 
-    std::vector<PageNode> nodes = p.parse_url(final_url, content);
+    std::unordered_set<Program::URL> nodes = p.parse_url(final_url, content);
     CHECK(!nodes.empty());
+    CHECK(index != 0);
     std::cout << "for page " << url << ", here are the " << nodes.size() << " extracted links:" << std::endl;
-    for(auto& node : nodes) {
-      std::cout << node.url() << std::endl;
-      CHECK_MESSAGE(Program::is_valid_url(node.url()), "Invalid URL extracted: " << node.url());
+    for(Program::URL const& child_url : nodes) {
+      std::cout << child_url << std::endl;
+      CHECK_MESSAGE(Program::is_valid_url(child_url), "Invalid URL extracted: " << child_url);
     }
   }
+  std::cout << "test completed with " << index << "urls" << std::endl;
 }
 
 TEST_CASE("") {
