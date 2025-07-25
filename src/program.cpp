@@ -4,6 +4,7 @@
 #include <iostream>
 #include <limits>
 #include <program.hpp>
+#include <filesystem>
 #include <thread>
 #include <unordered_set>
 //
@@ -536,7 +537,7 @@ int Program::graph()
     double normalizedDegree = static_cast<double>(v->degree()) / maxDegree;
     GA.fillColor(v) = getHeatMapColor(normalizedDegree);
     GA.strokeColor(v) = ogdf::Color("#000000");
-    GA.strokeWidth(v) = 0.05;
+    GA.strokeWidth(v) = 0.15;
   }
 
 
@@ -572,7 +573,8 @@ int Program::graph()
     // We make a copy of the attributes to ensure each layout starts fresh
     ogdf::GraphAttributes GAcopy = GA;
     layout.call(GAcopy);
-    std::string filename = "graph-" + name + ".svg";
+    std::string filename = "graphs/graph-" + name + ".svg";
+    std::filesystem::create_directories("graphs");
     ogdf::GraphIO::write(GAcopy, filename, ogdf::GraphIO::drawSVG);
 
     fmt::print(fg(fmt::color::green), "ok");
@@ -591,7 +593,7 @@ int Program::graph()
     ogdf::NodeRespecterLayout nodeRespecter;
     // Suppose these setters exist in your OGDF version:
     nodeRespecter.setNumberOfIterations(500); // default might be only 100
-    // nodeRespecter.setMinimalNodeGap(0.1);         // gap in graph‐coordinate units
+    nodeRespecter.setRepulsionDistance(0.35); // Adjust as needed
     nodeRespecter.setBendNormalizationAngle(0.5); // [0..1], how strongly edges avoid nodes
     nodeRespecter.call(GAcopy);
 
@@ -601,21 +603,28 @@ int Program::graph()
     ++graph_count;
   };
 
-
   // Engine 1: FMMMLayout (Fast Multipole Multilevel Method)
   ogdf::FMMMLayout fmmmLayout;
   fmmmLayout.useHighLevelOptions(true);
   fmmmLayout.newInitialPlacement(true);
   fmmmLayout.qualityVersusSpeed(ogdf::FMMMOptions::QualityVsSpeed::GorgeousAndEfficient);
+  fmmmLayout.unitEdgeLength(40.0);  // Larger = more spread
+  fmmmLayout.repForcesStrength(0.25); // Try increasing (0.1 - 1.0+)
   runLayout(fmmmLayout, "FMMMLayout");
 
   // Engine 2: StressMinimization
   ogdf::StressMinimization stressMinimization;
+  stressMinimization.setIterations(500);
   runLayout(stressMinimization, "StressMinimization");
 
-  // Engine 3: NodeRespecterLayout
-  ogdf::NodeRespecterLayout nodeRespecterLayout;
-  runLayoutAndRespect(fmmmLayout, "FMMM-NodeRespecterLayout");
+  // // Engine 3: NodeRespecterLayout
+  // ogdf::NodeRespecterLayout nodeRespecterLayout;
+  // nodeRespecterLayout.setNumberOfIterations(300);
+  // nodeRespecterLayout.setMinimalTemperature(0.4); // smaller than default
+  // nodeRespecterLayout.setBendNormalizationAngle(0.3); // slightly less restrictive
+  //
+  // runLayoutAndRespect(fmmmLayout, "FMMM-NodeRespecterLayout");
+  // runLayoutAndRespect(stressMinimization, "StressMinimization-NodeRespecterLayout");
 
   return graph_count;
 }
