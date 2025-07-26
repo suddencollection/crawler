@@ -20,7 +20,7 @@ To verify installation:
     $ cmake --version
     $ conan --version
 
-Then build and run
+Then build and run:
 
     $ sh/build
     $ sh/run
