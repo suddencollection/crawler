@@ -26,4 +26,5 @@ Then build and run:
     $ sh/run
 
 # Demonstration
-<a href="https://asciinema.org/a/USO6UdGKT632ZseKz5KtFYct5" target="_blank"><img src="https://asciinema.org/a/USO6UdGKT632ZseKz5KtFYct5.svg" width="70%" /></a>
+- [Asciinema](https://asciinema.org/a/USO6UdGKT632ZseKz5KtFYct5)
+<a href="https://asciinema.org/a/USO6UdGKT632ZseKz5KtFYct5" target="_blank"><img src="https://asciinema.org/a/USO6UdGKT632ZseKz5KtFYct5.png" /></a>
