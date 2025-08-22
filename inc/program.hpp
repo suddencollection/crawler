@@ -13,6 +13,9 @@
 #include <lexbor/dom/interfaces/node.h>
 #include <lexbor/html/interface.h>
 #include <lexbor/html/parser.h>
+//
+#include <pybind11/embed.h>
+
 
 class PageNode
 {

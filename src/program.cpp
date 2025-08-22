@@ -1,9 +1,10 @@
+#include <program.hpp>
+//
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
-#include <program.hpp>
 #include <filesystem>
 #include <thread>
 #include <unordered_set>
@@ -18,6 +19,7 @@
 //
 #include <fmt/color.h>
 #include <fmt/core.h>
+//
 
 size_t Program::write_callback(char* ptr, size_t size, size_t nmemb, void* userdata)
 {

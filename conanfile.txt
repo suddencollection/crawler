@@ -4,6 +4,7 @@ lexbor/2.4.0
 doctest/2.4.11
 ogdf/2023.09
 fmt/11.2.0
+pybind11/2.13.6
 
 [generators]
 CMakeToolchain

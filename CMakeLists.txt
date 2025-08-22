@@ -21,17 +21,25 @@ find_package(Lexbor REQUIRED)
 find_package(OGDF REQUIRED)
 find_package(fmt REQUIRED)
 
+find_package(pybind11 CONFIG REQUIRED)
+find_package(Python 3.8 COMPONENTS Interpreter Development REQUIRED)
+
 target_link_libraries(crawler_lib
   PUBLIC
     CURL::libcurl
     lexbor::lexbor_static
     ogdf::ogdf
     fmt::fmt
+    pybind11::embed
 )
 
 # executable
 add_executable(crawler_exe src/main.cpp)
-target_link_libraries(crawler_exe PRIVATE crawler_lib)
+target_link_libraries(crawler_exe 
+  PRIVATE
+    crawler_lib
+)
 
 # tests
 add_subdirectory(tests)
+
